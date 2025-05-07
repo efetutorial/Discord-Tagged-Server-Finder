@@ -33,6 +33,26 @@ Since around May 6th, 2025, newly created Discord servers have a small, random c
 > ### **PROCEED WITH EXTREME CAUTION AND FULL ACKNOWLEDGEMENT OF THESE IMMINENT RISKS.**
 > ---
 
+> [!WARNING]
+> ## **DISCLAIMER AND LIABILITY WAIVER**
+>
+> ---
+>
+> ### **BY USING THIS SOFTWARE, YOU ACKNOWLEDGE AND AGREE TO THE FOLLOWING:**
+>
+> *   **NO LIABILITY:** The author, contributors, and distributors of this software bear absolutely NO RESPONSIBILITY for any consequences resulting from your use of this tool.
+> *   **USE AT YOUR OWN RISK:** Any actions taken with this software are done at your sole and exclusive risk. This includes but is not limited to:
+>     * Account suspension or termination
+>     * Loss of data or digital assets
+>     * Any other penalties imposed by Discord
+> *   **NO LEGAL RECOURSE:** You waive any right to seek damages or other compensation from the author(s) if your account is banned or penalized.
+> *   **NO WARRANTY:** This software is provided "AS IS" without warranty of any kind, either expressed or implied.
+> *   **EDUCATIONAL PURPOSE:** This tool is shared for educational purposes only to demonstrate API interactions.
+>
+> ### **YOU ARE SOLELY RESPONSIBLE FOR YOUR DECISION TO USE THIS SOFTWARE AND ALL CONSEQUENCES THEREOF.**
+>
+> ---
+
     
 
 Before running the script, ensure you have completed the following step:
