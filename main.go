@@ -342,7 +342,7 @@ func main() {
 					Timestamp: time.Now().Format(time.RFC3339),
 				},
 			},
-			Username: "Discord Tag Tool",
+			Username: "Tag Finder Tool", // Changed from "Discord Tag Tool" to avoid the Discord API restriction
 		}
 		
 		if err := sendWebhookMessage(webhookURL, startMessage); err != nil {
@@ -397,7 +397,7 @@ func main() {
 								Timestamp: time.Now().Format(time.RFC3339),
 							},
 						},
-						Username: "Discord Tag Tool",
+						Username: "Tag Finder Tool", 
 					}
 					
 					if err := sendWebhookMessage(webhookURL, tagFoundMessage); err != nil {
