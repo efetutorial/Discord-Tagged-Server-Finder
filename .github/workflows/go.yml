@@ -1,0 +1,33 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Go
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest # Using windows-latest since this is a Windows application
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5 # Using v5 to match your existing workflow
+      with:
+        go-version: '1.24' # Matching Go version from your existing workflow
+
+    - name: Build
+      run: go build -v -o main.exe ./main.go
+
+    - name: Test
+      run: go test -v ./...
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: main-windows-executable
+        path: main.exe
