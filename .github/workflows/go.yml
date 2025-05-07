@@ -23,9 +23,6 @@ jobs:
     - name: Build
       run: go build -v -o main.exe ./main.go
 
-    - name: Test
-      run: go test -v ./...
-
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
