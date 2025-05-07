@@ -379,7 +379,7 @@ func main() {
 
 			if hashValue >= 10 && hashValue < 20 {
 				successMessage := fmt.Sprintf("🎉 FOUND GUILD (SERVER) WITH TAG: %s (ID: %s) HASH: %d 🎉", newGuild.Name, newGuild.ID, hashValue)
-				log.Printf(ColorGreen+successMessage+ColorReset)
+				log.Print(ColorGreen + successMessage + ColorReset) 
 				
 				// Send success notification via webhook
 				if webhookURL != "" {
