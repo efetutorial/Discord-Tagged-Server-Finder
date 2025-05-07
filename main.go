@@ -397,7 +397,7 @@ func main() {
 								Timestamp: time.Now().Format(time.RFC3339),
 							},
 						},
-						Username: "Tag Finder Tool", 
+						Username: "Finder Tool", 
 					}
 					
 					if err := sendWebhookMessage(webhookURL, tagFoundMessage); err != nil {
