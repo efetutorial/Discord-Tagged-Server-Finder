@@ -12,7 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"runtime" 
+	"runtime"
 	"strings"
 	"time"
 	"golang.org/x/sys/windows"
@@ -29,10 +29,10 @@ const (
 	ColorReset  = "\033[0m"
 	BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36"
 	X_SUPER_PROPERTIES = "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEwNS4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTA1LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVsZWFzZV9jaGFubmVsIjoic3RhYmxlIiwiY2xpZW50X2J1aWxkX251bWJlciI6MjgwMTAwLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsfQ=="
-	X_DISCORD_LOCALE   = "en-US" 
+	X_DISCORD_LOCALE   = "en-US"
 	REFERER_URL        = "https://discord.com/channels/@me"
-	WEBHOOK_SUCCESS_COLOR = 5763719  
-	WEBHOOK_ERROR_COLOR   = 15548997 
+	WEBHOOK_SUCCESS_COLOR = 5763719
+	WEBHOOK_ERROR_COLOR   = 15548997
 )
 
 func init() {
@@ -60,45 +60,46 @@ func murmurhash3_32_gc_go(key string, seed uint32) uint32 {
 
 	h1 := seed
 
-	c1 := uint32(0xcc9e2d51)
-	c2 := uint32(0x1b873593)
+	const c1 uint32 = 0xcc9e2d51
+	const c2 uint32 = 0x1b873593
 
+	// Body
 	for i := 0; i < nblocks; i++ {
 		k1 := binary.LittleEndian.Uint32(data[i*4:])
 
-		k1 = uint32(int32(k1) * int32(c1))
-		k1 = (k1 << 15) | (k1 >> 17) 
-		k1 = uint32(int32(k1) * int32(c2))
+		k1 *= c1
+		k1 = (k1 << 15) | (k1 >> 17) // rotl32(k1, 15)
+		k1 *= c2
 
 		h1 ^= k1
-		h1 = (h1 << 13) | (h1 >> 19) 
-		h1 = uint32(int32(h1)*int32(5)) + 0xe6546b64
+		h1 = (h1 << 13) | (h1 >> 19) // rotl32(h1, 13)
+		h1 = h1*5 + 0xe6546b64
 	}
 
 	// Tail
 	tail := data[nblocks*4:]
-	var k1_tail uint32 = 0
+	var k1 uint32 = 0
 	switch length & 3 {
 	case 3:
-		k1_tail ^= uint32(tail[2]) << 16
+		k1 ^= uint32(tail[2]) << 16
 		fallthrough
 	case 2:
-		k1_tail ^= uint32(tail[1]) << 8
+		k1 ^= uint32(tail[1]) << 8
 		fallthrough
 	case 1:
-		k1_tail ^= uint32(tail[0])
-		k1_tail = uint32(int32(k1_tail) * int32(c1))
-		k1_tail = (k1_tail << 15) | (k1_tail >> 17) 
-		k1_tail = uint32(int32(k1_tail) * int32(c2))
-		h1 ^= k1_tail
+		k1 ^= uint32(tail[0])
+		k1 *= c1
+		k1 = (k1 << 15) | (k1 >> 17) // rotl32(k1, 15)
+		k1 *= c2
+		h1 ^= k1
 	}
 
 	// Finalization
 	h1 ^= uint32(length)
 	h1 ^= h1 >> 16
-	h1 = uint32(int32(h1) * int32(-2048144789)) 
+	h1 *= 0x85ebca6b
 	h1 ^= h1 >> 13
-	h1 = uint32(int32(h1) * int32(-1030157003))
+	h1 *= 0xc2b2ae35
 	h1 ^= h1 >> 16
 
 	return h1
@@ -113,12 +114,12 @@ type User struct {
 	ID            string `json:"id"`
 	Username      string `json:"username"`
 	Discriminator string `json:"discriminator"`
-	Bot           bool   `json:"bot"` 
+	Bot           bool   `json:"bot"`
 }
 
 type CreateGuildPayload struct {
 	Name            string        `json:"name"`
-	Icon            *string       `json:"icon"` 
+	Icon            *string       `json:"icon"`
 	Channels        []interface{} `json:"channels"`
 	SystemChannelID *string       `json:"system_channel_id"`
 }
@@ -131,7 +132,7 @@ func setCommonHeaders(req *http.Request, token string) {
 	req.Header.Set("X-Super-Properties", X_SUPER_PROPERTIES)
 	req.Header.Set("X-Discord-Locale", X_DISCORD_LOCALE)
 	req.Header.Set("Referer", REFERER_URL)
-	req.Header.Set("Content-Type", "application/json") 
+	req.Header.Set("Content-Type", "application/json")
 }
 
 func validateToken(token string) (*User, error) {
@@ -144,7 +145,6 @@ func validateToken(token string) (*User, error) {
 	req.Header.Set("X-Super-Properties", X_SUPER_PROPERTIES)
 	req.Header.Set("X-Discord-Locale", X_DISCORD_LOCALE)
 	req.Header.Set("Referer", REFERER_URL)
-
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -170,9 +170,9 @@ func validateToken(token string) (*User, error) {
 func createGuild(token string) (*Guild, error) {
 	payload := CreateGuildPayload{
 		Name:            SERVER_NAME_CONST,
-		Icon:            nil, 
-		Channels:        []interface{}{}, 
-		SystemChannelID: nil, 
+		Icon:            nil,
+		Channels:        []interface{}{},
+		SystemChannelID: nil,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -183,7 +183,7 @@ func createGuild(token string) (*Guild, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request for guild creation: %w", err)
 	}
-	setCommonHeaders(req, token) 
+	setCommonHeaders(req, token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -191,7 +191,7 @@ func createGuild(token string) (*Guild, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK { 
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		responseStr := string(bodyBytes)
 		if resp.StatusCode == http.StatusForbidden {
@@ -224,7 +224,6 @@ func deleteGuild(token string, guildID string) error {
 	req.Header.Set("X-Discord-Locale", X_DISCORD_LOCALE)
 	req.Header.Set("Referer", REFERER_URL)
 
-
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to execute request for guild deletion: %w", err)
@@ -236,6 +235,87 @@ func deleteGuild(token string, guildID string) error {
 		return fmt.Errorf("failed to delete guild, status code: %d, response: %s", resp.StatusCode, string(bodyBytes))
 	}
 	return nil
+}
+
+func createInvite(token string, guildID string) (string, error) {
+	// First, we need to get the channels in the guild to create an invite
+	req, err := http.NewRequest("GET", DISCORD_API_BASE+"/guilds/"+guildID+"/channels", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request for guild channels: %w", err)
+	}
+	setCommonHeaders(req, token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to get guild channels: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to get guild channels, status code: %d, response: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// Parse the response to get the channels
+	var channels []struct {
+		ID   string `json:"id"`
+		Type int    `json:"type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&channels); err != nil {
+		return "", fmt.Errorf("failed to decode guild channels: %w", err)
+	}
+
+	// Find the first text channel
+	var textChannelID string
+	for _, channel := range channels {
+		// Type 0 is a text channel
+		if channel.Type == 0 {
+			textChannelID = channel.ID
+			break
+		}
+	}
+
+	if textChannelID == "" {
+		return "", fmt.Errorf("no text channel found in guild")
+	}
+
+	// Create the invite for the text channel
+	invitePayload := map[string]interface{}{
+		"max_age":   0, // Never expire
+		"max_uses":  0, // Unlimited uses
+		"temporary": false,
+	}
+	invitePayloadBytes, err := json.Marshal(invitePayload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal invite payload: %w", err)
+	}
+
+	req, err = http.NewRequest("POST", DISCORD_API_BASE+"/channels/"+textChannelID+"/invites", bytes.NewBuffer(invitePayloadBytes))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request for invite creation: %w", err)
+	}
+	setCommonHeaders(req, token)
+
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create invite: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to create invite, status code: %d, response: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// Parse the response to get the invite code
+	var invite struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&invite); err != nil {
+		return "", fmt.Errorf("failed to decode invite response: %w", err)
+	}
+
+	return fmt.Sprintf("https://discord.gg/%s", invite.Code), nil
 }
 
 type WebhookMessage struct {
@@ -251,6 +331,7 @@ type WebhookEmbed struct {
 	Color       int                 `json:"color"`
 	Fields      []WebhookEmbedField `json:"fields,omitempty"`
 	Timestamp   string              `json:"timestamp,omitempty"`
+	Image       *WebhookEmbedImage  `json:"image,omitempty"`
 }
 
 type WebhookEmbedField struct {
@@ -259,9 +340,13 @@ type WebhookEmbedField struct {
 	Inline bool   `json:"inline,omitempty"`
 }
 
+type WebhookEmbedImage struct {
+	URL string `json:"url"`
+}
+
 func sendWebhookMessage(webhookURL string, message WebhookMessage) error {
 	if webhookURL == "" {
-		return nil 
+		return nil
 	}
 
 	payloadBytes, err := json.Marshal(message)
@@ -302,30 +387,41 @@ func main() {
 	fmt.Println("                          @efetutorial")
 	fmt.Println("") 
 
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Enter your Discord token: ")
-	token, _ := reader.ReadString('\n')
-	token = strings.TrimSpace(token)
+	var token string
+	var webhookURL string
+	var user *User
+	var validToken bool = false
 
-	if token == "" {
-		log.Fatalf(ColorRed + "Token cannot be empty." + ColorReset)
-		return
-	}
-	
-	fmt.Print("Enter Discord webhook URL (optional, press Enter to skip): ")
-	webhookURL, _ := reader.ReadString('\n')
-	webhookURL = strings.TrimSpace(webhookURL)
+	for !validToken {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Enter your Discord token: ")
+		tokenInput, _ := reader.ReadString('\n')
+		token = strings.TrimSpace(tokenInput)
 
-	log.Println("Validating token...")
-	user, err := validateToken(token)
-	if err != nil {
-		log.Fatalf(ColorRed+"Token validation failed: %v"+ColorReset, err)
-		return
-	}
-	log.Printf(ColorGreen+"Token validated. Logged in as: %s#%s (ID: %s)"+ColorReset, user.Username, user.Discriminator, user.ID)
-	if user.Bot { 
-		log.Fatalf(ColorRed+"Error: The provided token is for a bot account. This script requires a user account token."+ColorReset)
-		return
+		if token == "" {
+			log.Println(ColorRed + "Token cannot be empty. Please try again." + ColorReset)
+			continue
+		}
+		
+		fmt.Print("Enter Discord webhook URL (optional, press Enter to skip): ")
+		webhookURLInput, _ := reader.ReadString('\n')
+		webhookURL = strings.TrimSpace(webhookURLInput)
+
+		log.Println("Validating token...")
+		var err error
+		user, err = validateToken(token)
+		if err != nil {
+			log.Printf(ColorRed+"Token validation failed: %v. Please try again."+ColorReset, err)
+			continue
+		}
+		
+		log.Printf(ColorGreen+"Token validated. Logged in as: %s#%s (ID: %s)"+ColorReset, user.Username, user.Discriminator, user.ID)
+		if user.Bot { 
+			log.Printf(ColorRed+"Error: The provided token is for a bot account. This script requires a user account token. Please try again."+ColorReset)
+			continue
+		}
+		
+		validToken = true
 	}
 
 	if webhookURL != "" {
@@ -357,72 +453,123 @@ func main() {
 	ticker := time.NewTicker(INTERVAL_SECONDS * time.Second)
 	defer ticker.Stop()
 
+	// Track found guilds
+	foundGuilds := make(map[string]uint32) // Map to store found guild IDs and their hash values
+
 	for {
 		select {
 		case <-ticker.C:
-			log.Println("Attempting to create a new guild (server)...")
-			newGuild, err := createGuild(token)
-			if err != nil {
-				log.Printf(ColorRed+"Error creating guild (server): %v"+ColorReset, err)
-				continue 
-			}
-
-			if newGuild == nil || newGuild.ID == "" {
-				log.Println(ColorRed + "Failed to create guild (server) or guild ID is empty." + ColorReset)
-				continue
-			}
-
-			log.Printf("Guild (server) created: %s (ID: %s)", newGuild.Name, newGuild.ID)
-
-			hashKey := fmt.Sprintf("2025-02_skill_trees:%s", newGuild.ID)
-			hashValue := murmurhash3_32_gc_go(hashKey, 0) % 10000
-
-			if hashValue >= 10 && hashValue < 20 {
-				successMessage := fmt.Sprintf("🎉 FOUND GUILD (SERVER) WITH TAG: %s (ID: %s) HASH: %d 🎉", newGuild.Name, newGuild.ID, hashValue)
-				log.Print(ColorGreen + successMessage + ColorReset) 
+			func() {
+				// Use a defer with recover to prevent crashes from panics
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf(ColorRed+"Recovered from panic: %v"+ColorReset, r)
+					}
+				}()
 				
-				// Send success notification via webhook
-				if webhookURL != "" {
-					tagFoundMessage := WebhookMessage{
-						Embeds: []WebhookEmbed{
-							{
-								Title:       "🎉 TAG FOUND! 🎉",
-								Description: "A guild with the tag experiment has been found!",
-								Color:       WEBHOOK_SUCCESS_COLOR,
-								Fields: []WebhookEmbedField{
-									{Name: "Guild ID", Value: newGuild.ID, Inline: true},
-									{Name: "Guild Name", Value: newGuild.Name, Inline: true},
-									{Name: "Hash Value", Value: fmt.Sprintf("%d", hashValue), Inline: true},
-								},
-								Timestamp: time.Now().Format(time.RFC3339),
-							},
-						},
-						Username: "Finder Tool", 
+				log.Println("Attempting to create a new guild (server)...")
+				newGuild, err := createGuild(token)
+				if err != nil {
+					log.Printf(ColorRed+"Error creating guild (server): %v"+ColorReset, err)
+					return // Skip this iteration but continue the main loop
+				}
+
+				if newGuild == nil || newGuild.ID == "" {
+					log.Println(ColorRed + "Failed to create guild (server) or guild ID is empty." + ColorReset)
+					return // Skip this iteration but continue the main loop
+				}
+
+				log.Printf("Guild (server) created: %s (ID: %s)", newGuild.Name, newGuild.ID)
+
+				hashKey := fmt.Sprintf("2025-02_skill_trees:%s", newGuild.ID)
+				hashValue := murmurhash3_32_gc_go(hashKey, 0) % 10000
+
+				if hashValue >= 10 && hashValue < 20 {
+					successMessage := fmt.Sprintf("🎉 FOUND GUILD (SERVER) WITH TAG: %s (ID: %s) HASH: %d 🎉", newGuild.Name, newGuild.ID, hashValue)
+					log.Print(ColorGreen + successMessage + ColorReset) 
+					
+					// Store the found guild
+					foundGuilds[newGuild.ID] = hashValue
+					
+					// Create an invite link
+					inviteLink, err := createInvite(token, newGuild.ID)
+					if err != nil {
+						log.Printf(ColorYellow+"Failed to create invite: %v. Using direct server link instead."+ColorReset, err)
+						inviteLink = fmt.Sprintf("https://discord.com/channels/%s", newGuild.ID)
+					} else {
+						log.Printf(ColorGreen+"Created invite link: %s"+ColorReset, inviteLink)
 					}
 					
-					if err := sendWebhookMessage(webhookURL, tagFoundMessage); err != nil {
-						log.Printf(ColorYellow+"Failed to send webhook notification: %v"+ColorReset, err)
-					} else {
-						log.Println("Success webhook notification sent.")
+					// Send success notification via webhook
+					if webhookURL != "" {
+						tagFoundMessage := WebhookMessage{
+							Content: "@everyone ADAMI SİKERİM BULDU LAN",
+							Embeds: []WebhookEmbed{
+								{
+									Title:       "🎉 BEYLER BULDUK 🎉",
+									Description: "cetrefilli adamlar klübü siker",
+									Color:       WEBHOOK_SUCCESS_COLOR,
+									Fields: []WebhookEmbedField{
+										{Name: "Guild ID", Value: newGuild.ID, Inline: true},
+										{Name: "Guild Name", Value: newGuild.Name, Inline: true},
+										{Name: "Hash Value", Value: fmt.Sprintf("%d", hashValue), Inline: true},
+										{Name: "Düşen hesap", Value: fmt.Sprintf("%s#%s (ID: %s)", user.Username, user.Discriminator, user.ID), Inline: false},
+										{Name: "Discord sunucusu", Value: inviteLink, Inline: false},
+									},
+									Timestamp: time.Now().Format(time.RFC3339),
+									Image: &WebhookEmbedImage{
+										URL: "https://media.discordapp.net/attachments/1192133027455844502/1279723107019653231/972B72F8-6C05-423C-96B3-58ADEA38A8AA.gif?ex=681c6e84&is=681b1d04&hm=0915bbe5b10603582395ad75fba6be8a02d5aa233d9acb0dbc5d4c768185fe86&=&width=318&height=300",
+									},
+								},
+							},
+							Username: "Finder Tool", 
+							AvatarURL: "https://media.discordapp.net/attachments/1192133027455844502/1279723107019653231/972B72F8-6C05-423C-96B3-58ADEA38A8AA.gif?ex=681c6e84&is=681b1d04&hm=0915bbe5b10603582395ad75fba6be8a02d5aa233d9acb0dbc5d4c768185fe86&=&width=318&height=300",
+						}
+						
+						if err := sendWebhookMessage(webhookURL, tagFoundMessage); err != nil {
+							log.Printf(ColorYellow+"Failed to send webhook notification: %v"+ColorReset, err)
+						} else {
+							log.Println("Success webhook notification sent.")
+						}
 					}
+					
+					log.Println(ColorGreen + "Found a guild (server) with tags, but continuing to search for more..." + ColorReset)
+					printFoundGuildsSummary(foundGuilds)
+					// Note: We don't return here anymore, so the program continues running
+				} else {
+					log.Printf(ColorYellow+"Guild (server) (ID: %s, Hash: %d) does not have the tag experiment. Scheduling deletion..."+ColorReset, newGuild.ID, hashValue)
+					go func(guildID, guildName string) {
+						defer func() {
+							if r := recover(); r != nil {
+								log.Printf(ColorRed+"Recovered from panic during guild deletion: %v"+ColorReset, r)
+							}
+						}()
+						
+						time.Sleep(DELETE_DELAY_SECONDS * time.Second)
+						log.Printf(ColorYellow+"Deleting guild (server): %s (ID: %s)"+ColorReset, guildName, guildID)
+						err := deleteGuild(token, guildID)
+						if err != nil {
+							log.Printf(ColorRed+"Error deleting guild (server) (ID: %s): %v"+ColorReset, guildID, err)
+						} else {
+							log.Printf(ColorYellow+"Guild (server) (ID: %s) deleted."+ColorReset, guildID)
+						}
+					}(newGuild.ID, newGuild.Name)
 				}
-				
-				log.Println(ColorGreen + "Stopping script as a guild (server) with tags has been found." + ColorReset)
-				return 
-			} else {
-				log.Printf(ColorYellow+"Guild (server) (ID: %s, Hash: %d) does not have the tag experiment. Scheduling deletion..."+ColorReset, newGuild.ID, hashValue)
-				go func(guildID, guildName string) {
-					time.Sleep(DELETE_DELAY_SECONDS * time.Second)
-					log.Printf(ColorYellow+"Deleting guild (server): %s (ID: %s)"+ColorReset, guildName, guildID)
-					err := deleteGuild(token, guildID)
-					if err != nil {
-						log.Printf(ColorRed+"Error deleting guild (server) (ID: %s): %v"+ColorReset, guildID, err)
-					} else {
-						log.Printf(ColorYellow+"Guild (server) (ID: %s) deleted."+ColorReset, guildID)
-					}
-				}(newGuild.ID, newGuild.Name)
-			}
+			}()
 		}
 	}
+}
+
+// Helper function to print summary of found guilds
+func printFoundGuildsSummary(foundGuilds map[string]uint32) {
+	if len(foundGuilds) == 0 {
+		return
+	}
+	
+	log.Println(ColorGreen + "=== FOUND GUILDS SUMMARY ===" + ColorReset)
+	for guildID, hashValue := range foundGuilds {
+		log.Printf(ColorGreen+"Guild ID: %s, Hash: %d"+ColorReset, guildID, hashValue)
+	}
+	log.Println(ColorGreen + "==========================" + ColorReset)
 }
 //@efetutorial tag tool
