@@ -74,3 +74,22 @@ Before running the script, ensure you have completed the following step:
 The script will then start creating and checking servers.
 
 **Remember to re-enable 2FA on your account once the script has found a server or you decide to stop it.**
+
+## token.txt
+Create it so that each line contains a Discord user token:
+```
+token1
+token2
+token3
+...
+```
+
+## proxy.txt
+Create it so that each line contains a proxy address (e.g., http://user:password@ip:port or http://ip:port):
+```
+http://127.0.0.1:8080
+http://kullanici:sifre@192.168.1.1:3128
+...
+```
+
+Using a proxy when starting the program
