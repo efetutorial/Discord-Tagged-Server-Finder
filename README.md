@@ -1,5 +1,3 @@
-# NOT WORKING HASH FUNC IS BROKEN
-
 # Discord Server Tag Automation Script (GUILD_TAGS) - Go Version
 
 Since around May 6th, 2025, newly created Discord servers have a small, random chance (approximately 1 in 1000) of including the experimental tag feature; this Go program automates the repetitive process of creating and deleting servers to help find one.
