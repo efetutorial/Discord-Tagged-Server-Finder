@@ -95,5 +95,4 @@ Using a proxy when starting the program
 
 # contact 
 tg: @efetutorial
-dc: @efetutorial
 
