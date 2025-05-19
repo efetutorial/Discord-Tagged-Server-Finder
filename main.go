@@ -11,15 +11,17 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"golang.org/x/sys/windows"
 )
 
 const (
-	INTERVAL_SECONDS     = 5
+	INTERVAL_SECONDS     = 67
 	DELETE_DELAY_SECONDS = 2
 	SERVER_NAME_CONST    = "Tag server"
 	DISCORD_API_BASE     = "https://discord.com/api/v9" // Common API version
@@ -35,6 +37,13 @@ const (
 	WEBHOOK_ERROR_COLOR   = 15548997
 )
 
+var (
+	httpClient = &http.Client{Timeout: 10 * time.Second}
+	proxyList  []string
+	proxyLock  sync.Mutex
+	proxyIndex int
+)
+
 func init() {
 	if runtime.GOOS == "windows" {
 		var outMode uint32
@@ -48,7 +57,6 @@ func init() {
 
 		if err := windows.SetConsoleMode(out, outMode); err != nil {
 			log.Printf("Warning: Failed to set console mode: %v. Colors might not work.", err)
-		} else {
 		}
 	}
 }
@@ -124,7 +132,59 @@ type CreateGuildPayload struct {
 	SystemChannelID *string       `json:"system_channel_id"`
 }
 
-var httpClient = &http.Client{Timeout: 10 * time.Second}
+// Proxy desteği: proxy.txt'den proxy'leri oku
+func readProxiesFromFile(filePath string) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open proxy file: %w", err)
+	}
+	defer file.Close()
+
+	var proxies []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		proxy := strings.TrimSpace(scanner.Text())
+		if proxy != "" {
+			proxies = append(proxies, proxy)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading proxy file: %w", err)
+	}
+	if len(proxies) == 0 {
+		return nil, fmt.Errorf("no valid proxies found in the file")
+	}
+	return proxies, nil
+}
+
+// Proxy desteği: Sıradaki proxy'yi döndür
+func getNextProxy() string {
+	proxyLock.Lock()
+	defer proxyLock.Unlock()
+	if len(proxyList) == 0 {
+		return ""
+	}
+	proxy := proxyList[proxyIndex%len(proxyList)]
+	proxyIndex++
+	return proxy
+}
+
+// Proxy desteği: HTTP client'ı proxy ile oluştur
+func newHttpClientWithProxy(proxyAddr string) *http.Client {
+	if proxyAddr == "" {
+		return &http.Client{Timeout: 10 * time.Second}
+	}
+	proxyURL, err := url.Parse(proxyAddr)
+	if err != nil {
+		return &http.Client{Timeout: 10 * time.Second}
+	}
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+	}
+}
 
 func setCommonHeaders(req *http.Request, token string) {
 	req.Header.Set("Authorization", token)
@@ -179,38 +239,95 @@ func createGuild(token string) (*Guild, error) {
 		return nil, fmt.Errorf("failed to marshal create guild payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", DISCORD_API_BASE+"/guilds", bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request for guild creation: %w", err)
-	}
-	setCommonHeaders(req, token)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request for guild creation: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		responseStr := string(bodyBytes)
-		if resp.StatusCode == http.StatusForbidden {
-			var discordError struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-			}
-			if json.Unmarshal(bodyBytes, &discordError) == nil && discordError.Code == 10008 {
-				return nil, fmt.Errorf("failed to create guild, status code: %d. Discord error code: %d (%s). This often indicates account restrictions or that the account is flagged. Response: %s", resp.StatusCode, discordError.Code, discordError.Message, responseStr)
-			}
+	// Add retry logic for temporary failures
+	maxRetries := 3
+	var lastErr error
+	
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Printf("Retrying guild creation (attempt %d/%d)...", attempt+1, maxRetries)
+			// Exponential backoff between retries
+			time.Sleep(time.Duration(attempt*2) * time.Second)
 		}
-		return nil, fmt.Errorf("failed to create guild, status code: %d, response: %s", resp.StatusCode, responseStr)
-	}
+		
+		req, err := http.NewRequest("POST", DISCORD_API_BASE+"/guilds", bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create request for guild creation: %w", err)
+			continue
+		}
+		setCommonHeaders(req, token)
 
-	var newGuild Guild
-	if err := json.NewDecoder(resp.Body).Decode(&newGuild); err != nil {
-		return nil, fmt.Errorf("failed to decode guild creation response: %w", err)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to execute request for guild creation: %w", err)
+			continue
+		}
+		
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		
+		if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusOK {
+			var newGuild Guild
+			if err := json.Unmarshal(bodyBytes, &newGuild); err != nil {
+				lastErr = fmt.Errorf("failed to decode guild creation response: %w", err)
+				continue
+			}
+			return &newGuild, nil
+		}
+		
+		// Parse specific errors
+		responseStr := string(bodyBytes)
+		var discordError struct {
+			Message string `json:"message"`
+			Code    int    `json:"code"`
+		}
+		
+		if json.Unmarshal(bodyBytes, &discordError) == nil {
+			// Check for specific error codes
+			switch discordError.Code {
+			case 10008: // Unknown Message
+				return nil, fmt.Errorf("account is likely restricted from creating servers. Try using a different account. Status code: %d, Error code: %d (%s)", resp.StatusCode, discordError.Code, discordError.Message)
+			case 20028: // Rate limited
+				if attempt < maxRetries-1 {
+					log.Printf("Rate limited. Waiting before retry...")
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				return nil, fmt.Errorf("rate limited by Discord. Try again later or increase INTERVAL_SECONDS. Status code: %d", resp.StatusCode)
+			case 40001: // Unauthorized
+				return nil, fmt.Errorf("unauthorized. Your token may be invalid or expired. Status code: %d", resp.StatusCode)
+			default:
+				lastErr = fmt.Errorf("failed to create guild, status code: %d. Discord error code: %d (%s). Response: %s", resp.StatusCode, discordError.Code, discordError.Message, responseStr)
+			}
+		} else {
+			lastErr = fmt.Errorf("failed to create guild, status code: %d, response: %s", resp.StatusCode, responseStr)
+		}
+		
+		// Don't retry on permanent errors like 401 Unauthorized
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, lastErr
+		}
+		
+		// Check if we should retry based on status code
+		if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+			return nil, lastErr
+		}
 	}
-	return &newGuild, nil
+	
+	return nil, fmt.Errorf("failed to create guild after %d attempts: %v", maxRetries, lastErr)
+}
+
+func suggestSolution(errorCode int) string {
+	switch errorCode {
+	case 10008:
+		return "This account may be restricted from creating servers. Try using a different Discord account."
+	case 20028, 429:
+		return "You're being rate limited. Try increasing the INTERVAL_SECONDS value or wait a while before trying again."
+	case 40001, 401:
+		return "Your token appears to be invalid or expired. Try generating a new token."
+	default:
+		return "General Discord API error. Verify your account is in good standing and not restricted."
+	}
 }
 
 func deleteGuild(token string, guildID string) error {
@@ -354,6 +471,7 @@ func sendWebhookMessage(webhookURL string, message WebhookMessage) error {
 		return fmt.Errorf("failed to marshal webhook message: %w", err)
 	}
 
+	// Proxy desteği: webhook için proxy kullanılmaz, doğrudan gönder
 	req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("failed to create webhook request: %w", err)
@@ -374,133 +492,162 @@ func sendWebhookMessage(webhookURL string, message WebhookMessage) error {
 	return nil
 }
 
-func main() {
-	fmt.Println(ColorRed + `
-██████╗ ██╗███████╗ ██████╗ ██████╗ ██████╗     ████████╗  █████╗  ██████╗ 
-██╔══██╗██║██╔════╝██╔════╝██╔═══██╗██╔══██╗    ╚══██╔══╝ ██╔══██╗██╔════╝ 
-██║  ██║██║███████╗██║     ██║   ██║██████╔╝       ██║    ███████║███████╗ 
-██║  ██║██║╚════██║██║     ██║   ██║██╔══██╗       ██║    ██╔══██║██╔═══██╗
-██████╔╝██║███████║╚██████╗╚██████╔╝██║  ██║       ██║    ██║  ██║╚██████╔╝
-╚═════╝ ╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝       ╚═╝    ╚═╝  ╚═╝ ╚═════╝ 
-                                  Tool
-` + ColorReset)
-	fmt.Println("                          @efetutorial")
-	fmt.Println("") 
+func readTokensFromFile(filePath string) ([]string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open token file: %w", err)
+	}
+	defer file.Close()
 
-	var token string
-	var webhookURL string
-	var user *User
-	var validToken bool = false
-
-	for !validToken {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Print("Enter your Discord token: ")
-		tokenInput, _ := reader.ReadString('\n')
-		token = strings.TrimSpace(tokenInput)
-
-		if token == "" {
-			log.Println(ColorRed + "Token cannot be empty. Please try again." + ColorReset)
-			continue
+	var tokens []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		token := strings.TrimSpace(scanner.Text())
+		if token != "" {
+			tokens = append(tokens, token)
 		}
-		
-		fmt.Print("Enter Discord webhook URL (optional, press Enter to skip): ")
-		webhookURLInput, _ := reader.ReadString('\n')
-		webhookURL = strings.TrimSpace(webhookURLInput)
+	}
 
-		log.Println("Validating token...")
-		var err error
-		user, err = validateToken(token)
-		if err != nil {
-			log.Printf(ColorRed+"Token validation failed: %v. Please try again."+ColorReset, err)
-			continue
-		}
-		
-		log.Printf(ColorGreen+"Token validated. Logged in as: %s#%s (ID: %s)"+ColorReset, user.Username, user.Discriminator, user.ID)
-		if user.Bot { 
-			log.Printf(ColorRed+"Error: The provided token is for a bot account. This script requires a user account token. Please try again."+ColorReset)
-			continue
-		}
-		
-		validToken = true
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading token file: %w", err)
+	}
+
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("no valid tokens found in the file")
+	}
+
+	return tokens, nil
+}
+
+func runForToken(token string, webhookURL string, tokenIndex int) {
+	prefix := ""
+	if tokenIndex >= 0 {
+		prefix = fmt.Sprintf("[Token %d] ", tokenIndex+1)
+	}
+
+	logPrefix := func(message string) string {
+		return prefix + message
+	}
+
+	log.Println(logPrefix("Validating token..."))
+	user, err := validateToken(token)
+	if err != nil {
+		log.Printf(ColorRed+"%s"+ColorReset, logPrefix(fmt.Sprintf("Token validation failed: %v", err)))
+		return
+	}
+	
+	log.Printf(ColorGreen+"%s"+ColorReset, logPrefix(fmt.Sprintf("Token validated. Logged in as: %s#%s (ID: %s)", user.Username, user.Discriminator, user.ID)))
+	
+	if user.Bot { 
+		log.Printf(ColorRed+"%s"+ColorReset, logPrefix("Error: The provided token is for a bot account. This script requires a user account token."))
+		return
 	}
 
 	if webhookURL != "" {
 		startMessage := WebhookMessage{
 			Embeds: []WebhookEmbed{
 				{
-					Title:       "Discord Tag Tool Started",
+					Title:       fmt.Sprintf("Discord Tag Tool Started - Token %d", tokenIndex+1),
 					Description: fmt.Sprintf("Tool started successfully and logged in as %s#%s", user.Username, user.Discriminator),
 					Color:       WEBHOOK_SUCCESS_COLOR,
 					Fields: []WebhookEmbedField{
 						{Name: "User ID", Value: user.ID, Inline: true},
 						{Name: "Status", Value: "Starting guild creation process...", Inline: true},
+						{Name: "Token Index", Value: fmt.Sprintf("%d", tokenIndex+1), Inline: true},
 					},
 					Timestamp: time.Now().Format(time.RFC3339),
 				},
 			},
-			Username: "Tag Finder Tool", // Changed from "Discord Tag Tool" to avoid the Discord API restriction
+			Username: "Tag Finder Tool",
 		}
 		
 		if err := sendWebhookMessage(webhookURL, startMessage); err != nil {
-			log.Printf(ColorYellow+"Failed to send webhook notification: %v"+ColorReset, err)
+			log.Printf(ColorYellow+"%s"+ColorReset, logPrefix(fmt.Sprintf("Failed to send webhook notification: %v", err)))
 		} else {
-			log.Println("Initial webhook notification sent successfully.")
+			log.Println(logPrefix("Initial webhook notification sent successfully."))
 		}
 	}
 
-	log.Println("Starting guild (server) creation script...")
+	log.Println(logPrefix("Starting guild (server) creation script..."))
 
-	ticker := time.NewTicker(INTERVAL_SECONDS * time.Second)
+	randomizedInterval := INTERVAL_SECONDS
+	if tokenIndex > 0 {
+		randomizedInterval += tokenIndex * 10
+	}
+	
+	ticker := time.NewTicker(time.Duration(randomizedInterval) * time.Second)
 	defer ticker.Stop()
 
-	// Track found guilds
-	foundGuilds := make(map[string]uint32) // Map to store found guild IDs and their hash values
+	foundGuilds := make(map[string]uint32)
+
+	// Proxy desteği: Her token için yeni bir httpClient oluştur
+	var client *http.Client
+	proxyAddr := getNextProxy()
+	client = newHttpClientWithProxy(proxyAddr)
+	// httpClient değişkenini fonksiyonun başında ayarla
+	oldClient := httpClient
+	httpClient = client
+	defer func() { httpClient = oldClient }()
 
 	for {
 		select {
 		case <-ticker.C:
 			func() {
-				// Use a defer with recover to prevent crashes from panics
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf(ColorRed+"Recovered from panic: %v"+ColorReset, r)
+						log.Printf(ColorRed+"%s"+ColorReset, logPrefix(fmt.Sprintf("Recovered from panic: %v", r)))
 					}
 				}()
 				
-				log.Println("Attempting to create a new guild (server)...")
+				log.Println(logPrefix("Attempting to create a new guild (server)..."))
 				newGuild, err := createGuild(token)
 				if err != nil {
-					log.Printf(ColorRed+"Error creating guild (server): %v"+ColorReset, err)
-					return // Skip this iteration but continue the main loop
+					errorMessage := err.Error()
+					
+					errorCode := 0
+					if strings.Contains(errorMessage, "Error code:") || strings.Contains(errorMessage, "error code:") {
+						codeParts := strings.Split(strings.ToLower(errorMessage), "error code:")
+						if len(codeParts) > 1 {
+							fmt.Sscanf(codeParts[1], "%d", &errorCode)
+						}
+					}
+					
+					solution := suggestSolution(errorCode)
+					log.Printf(ColorRed+"%s"+ColorReset, logPrefix(fmt.Sprintf("Error creating guild (server): %v", err)))
+					log.Printf(ColorYellow+"%s"+ColorReset, logPrefix(fmt.Sprintf("Suggestion: %s", solution)))
+					
+					if errorCode == 10008 {
+						log.Printf(ColorYellow+"%s"+ColorReset, logPrefix("Waiting for 5 minutes before attempting again..."))
+						time.Sleep(5 * time.Minute)
+					}
+					
+					return
 				}
 
 				if newGuild == nil || newGuild.ID == "" {
-					log.Println(ColorRed + "Failed to create guild (server) or guild ID is empty." + ColorReset)
-					return // Skip this iteration but continue the main loop
+					log.Println(ColorRed + logPrefix("Failed to create guild (server) or guild ID is empty.") + ColorReset)
+					return
 				}
 
-				log.Printf("Guild (server) created: %s (ID: %s)", newGuild.Name, newGuild.ID)
+				log.Printf(logPrefix(fmt.Sprintf("Guild (server) created: %s (ID: %s)", newGuild.Name, newGuild.ID)))
 
 				hashKey := fmt.Sprintf("2025-02_skill_trees:%s", newGuild.ID)
 				hashValue := murmurhash3_32_gc_go(hashKey, 0) % 10000
 
 				if hashValue >= 10 && hashValue < 20 {
 					successMessage := fmt.Sprintf("🎉 FOUND GUILD (SERVER) WITH TAG: %s (ID: %s) HASH: %d 🎉", newGuild.Name, newGuild.ID, hashValue)
-					log.Print(ColorGreen + successMessage + ColorReset) 
+					log.Print(ColorGreen + logPrefix(successMessage) + ColorReset) 
 					
-					// Store the found guild
 					foundGuilds[newGuild.ID] = hashValue
 					
-					// Create an invite link
 					inviteLink, err := createInvite(token, newGuild.ID)
 					if err != nil {
-						log.Printf(ColorYellow+"Failed to create invite: %v. Using direct server link instead."+ColorReset, err)
+						log.Printf(ColorYellow+"%s"+ColorReset, logPrefix(fmt.Sprintf("Failed to create invite: %v. Using direct server link instead.", err)))
 						inviteLink = fmt.Sprintf("https://discord.com/channels/%s", newGuild.ID)
 					} else {
-						log.Printf(ColorGreen+"Created invite link: %s"+ColorReset, inviteLink)
+						log.Printf(ColorGreen+"%s"+ColorReset, logPrefix(fmt.Sprintf("Created invite link: %s", inviteLink)))
 					}
 					
-					// Send success notification via webhook
 					if webhookURL != "" {
 						tagFoundMessage := WebhookMessage{
 							Content: "@everyone ADAMI SİKERİM BULDU LAN",
@@ -515,6 +662,7 @@ func main() {
 										{Name: "Hash Value", Value: fmt.Sprintf("%d", hashValue), Inline: true},
 										{Name: "Düşen hesap", Value: fmt.Sprintf("%s#%s (ID: %s)", user.Username, user.Discriminator, user.ID), Inline: false},
 										{Name: "Discord sunucusu", Value: inviteLink, Inline: false},
+										{Name: "Token Index", Value: fmt.Sprintf("%d", tokenIndex+1), Inline: false},
 									},
 									Timestamp: time.Now().Format(time.RFC3339),
 									Image: &WebhookEmbedImage{
@@ -527,31 +675,30 @@ func main() {
 						}
 						
 						if err := sendWebhookMessage(webhookURL, tagFoundMessage); err != nil {
-							log.Printf(ColorYellow+"Failed to send webhook notification: %v"+ColorReset, err)
+							log.Printf(ColorYellow+"%s"+ColorReset, logPrefix(fmt.Sprintf("Failed to send webhook notification: %v", err)))
 						} else {
-							log.Println("Success webhook notification sent.")
+							log.Println(logPrefix("Success webhook notification sent."))
 						}
 					}
 					
-					log.Println(ColorGreen + "Found a guild (server) with tags, but continuing to search for more..." + ColorReset)
-					printFoundGuildsSummary(foundGuilds)
-					// Note: We don't return here anymore, so the program continues running
+					log.Println(ColorGreen + logPrefix("Found a guild (server) with tags, but continuing to search for more...") + ColorReset)
+					printFoundGuildsSummaryForToken(foundGuilds, tokenIndex)
 				} else {
-					log.Printf(ColorYellow+"Guild (server) (ID: %s, Hash: %d) does not have the tag experiment. Scheduling deletion..."+ColorReset, newGuild.ID, hashValue)
+					log.Printf(ColorYellow+"%s"+ColorReset, logPrefix(fmt.Sprintf("Guild (server) (ID: %s, Hash: %d) does not have the tag experiment. Scheduling deletion...", newGuild.ID, hashValue)))
 					go func(guildID, guildName string) {
 						defer func() {
 							if r := recover(); r != nil {
-								log.Printf(ColorRed+"Recovered from panic during guild deletion: %v"+ColorReset, r)
+								log.Printf(ColorRed+"%s"+ColorReset, logPrefix(fmt.Sprintf("Recovered from panic during guild deletion: %v", r)))
 							}
 						}()
 						
 						time.Sleep(DELETE_DELAY_SECONDS * time.Second)
-						log.Printf(ColorYellow+"Deleting guild (server): %s (ID: %s)"+ColorReset, guildName, guildID)
+						log.Printf(ColorYellow+"%s"+ColorReset, logPrefix(fmt.Sprintf("Deleting guild (server): %s (ID: %s)", guildName, guildID)))
 						err := deleteGuild(token, guildID)
 						if err != nil {
-							log.Printf(ColorRed+"Error deleting guild (server) (ID: %s): %v"+ColorReset, guildID, err)
+							log.Printf(ColorRed+"%s"+ColorReset, logPrefix(fmt.Sprintf("Error deleting guild (server) (ID: %s): %v", guildID, err)))
 						} else {
-							log.Printf(ColorYellow+"Guild (server) (ID: %s) deleted."+ColorReset, guildID)
+							log.Printf(ColorYellow+"%s"+ColorReset, logPrefix(fmt.Sprintf("Guild (server) (ID: %s) deleted.", guildID)))
 						}
 					}(newGuild.ID, newGuild.Name)
 				}
@@ -560,16 +707,119 @@ func main() {
 	}
 }
 
-// Helper function to print summary of found guilds
-func printFoundGuildsSummary(foundGuilds map[string]uint32) {
+func printFoundGuildsSummaryForToken(foundGuilds map[string]uint32, tokenIndex int) {
 	if len(foundGuilds) == 0 {
 		return
 	}
 	
-	log.Println(ColorGreen + "=== FOUND GUILDS SUMMARY ===" + ColorReset)
-	for guildID, hashValue := range foundGuilds {
-		log.Printf(ColorGreen+"Guild ID: %s, Hash: %d"+ColorReset, guildID, hashValue)
+	prefix := ""
+	if tokenIndex >= 0 {
+		prefix = fmt.Sprintf("[Token %d] ", tokenIndex+1)
 	}
-	log.Println(ColorGreen + "==========================" + ColorReset)
+	
+	log.Println(ColorGreen + prefix + "=== FOUND GUILDS SUMMARY ===" + ColorReset)
+	for guildID, hashValue := range foundGuilds {
+		log.Printf(ColorGreen+prefix+"Guild ID: %s, Hash: %d"+ColorReset, guildID, hashValue)
+	}
+	log.Println(ColorGreen + prefix + "==========================" + ColorReset)
 }
+
+func main() {
+	fmt.Println(ColorRed + `
+██████╗ ██╗███████╗ ██████╗ ██████╗ ██████╗ ██████╗    ████████╗  █████╗  ██████╗ 
+██╔══██╗██║██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔══██╗   ╚══██╔══╝ ██╔══██╗██╔════╝ 
+██║  ██║██║███████╗██║     ██║   ██║██████╔╝██║  ██║      ██║    ███████║███████╗ 
+██║  ██║██║╚════██║██║     ██║   ██║██╔══██╗██║  ██║      ██║    ██╔══██║██╔═══██╗
+██████╔╝██║███████║╚██████╗╚██████╔╝██║  ██║██████╔╝      ██║    ██║  ██║╚██████╔╝
+╚═════╝ ╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝       ╚═╝    ╚═╝  ╚═╝ ╚═════╝ 
+                                  Tool
+` + ColorReset)
+	fmt.Println("                          @efetutorial")
+	fmt.Println("") 
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("Choose token input method:")
+	fmt.Println("1. Single token")
+	fmt.Println("2. Token file (one token per line)")
+	fmt.Print("Enter your choice (1 or 2): ")
+	choiceInput, _ := reader.ReadString('\n')
+	choice := strings.TrimSpace(choiceInput)
+
+	var tokens []string
+	var webhookURL string
+
+	fmt.Print("Enter Discord webhook URL (optional, press Enter to skip): ")
+	webhookURLInput, _ := reader.ReadString('\n')
+	webhookURL = strings.TrimSpace(webhookURLInput)
+
+	fmt.Print("Do you want to use a proxy? (Enter 1 for Yes, Enter for No): ")
+	proxyChoiceInput, _ := reader.ReadString('\n')
+	proxyChoice := strings.TrimSpace(proxyChoiceInput)
+	if proxyChoice == "1" {
+		fmt.Print("Proxy file path (default: proxy.txt): ")
+		proxyFileInput, _ := reader.ReadString('\n')
+		proxyFile := strings.TrimSpace(proxyFileInput)
+		if proxyFile == "" {
+			proxyFile = "proxy.txt"
+		}
+		var err error
+		proxyList, err = readProxiesFromFile(proxyFile)
+		if err != nil {
+			log.Fatalf(ColorRed+"Failed to read proxies from file: %v"+ColorReset, err)
+			return
+		}
+		log.Printf(ColorGreen+"%d proxy uploaded."+ColorReset, len(proxyList))
+	}
+
+	switch choice {
+	case "1":
+		fmt.Print("Enter your Discord token: ")
+		tokenInput, _ := reader.ReadString('\n')
+		token := strings.TrimSpace(tokenInput)
+		
+		if token == "" {
+			log.Fatalln(ColorRed + "Token cannot be empty." + ColorReset)
+			return
+		}
+		
+		tokens = append(tokens, token)
+	
+	case "2":
+		fmt.Print("Enter the path to your token file (default: token.txt): ")
+		filePathInput, _ := reader.ReadString('\n')
+		filePath := strings.TrimSpace(filePathInput)
+		
+		if filePath == "" {
+			filePath = "token.txt"
+		}
+		
+		var err error
+		tokens, err = readTokensFromFile(filePath)
+		if err != nil {
+			log.Fatalf(ColorRed+"Failed to read tokens from file: %v"+ColorReset, err)
+			return
+		}
+		
+		log.Printf(ColorGreen+"Successfully loaded %d tokens from %s"+ColorReset, len(tokens), filePath)
+	
+	default:
+		log.Fatalln(ColorRed + "Invalid choice. Please restart the program and enter either 1 or 2." + ColorReset)
+		return
+	}
+
+	var wg sync.WaitGroup
+	
+	for i, token := range tokens {
+		wg.Add(1)
+		go func(tok string, index int) {
+			defer wg.Done()
+			runForToken(tok, webhookURL, index)
+		}(token, i)
+		
+		time.Sleep(2 * time.Second)
+	}
+	
+	wg.Wait()
+}
+
 //@efetutorial tag tool
